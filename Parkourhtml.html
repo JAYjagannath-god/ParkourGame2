@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skyline Stickman Parkour</title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #10131a;
+      font-family: Arial, Helvetica, sans-serif;
+      touch-action: none;
+      user-select: none;
+    }
+
+    #stage {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      background: #10131a;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      image-rendering: auto;
+    }
+
+    #mobileControls {
+      display: none;
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .pad {
+      position: absolute;
+      bottom: max(18px, env(safe-area-inset-bottom));
+      display: flex;
+      gap: 16px;
+      pointer-events: auto;
+    }
+
+    .pad.left {
+      left: max(18px, env(safe-area-inset-left));
+    }
+
+    .pad.right {
+      right: max(18px, env(safe-area-inset-right));
+    }
+
+    .touchButton {
+      width: 74px;
+      height: 74px;
+      border: 2px solid rgba(255, 255, 255, 0.58);
+      border-radius: 50%;
+      background: rgba(12, 17, 28, 0.52);
+      color: #ffffff;
+      font: 800 30px Arial, Helvetica, sans-serif;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+      -webkit-tap-highlight-color: transparent;
+      backdrop-filter: blur(6px);
+    }
+
+    .touchButton:active,
+    .touchButton.pressed {
+      background: rgba(255, 255, 255, 0.82);
+      color: #10131a;
+      transform: translateY(2px) scale(0.97);
+    }
+
+    body[data-state="play"] #mobileControls,
+    body[data-state="win"] #mobileControls {
+      display: none;
+    }
+
+    @media (pointer: coarse) {
+      body[data-state="play"] #mobileControls,
+      body[data-state="win"] #mobileControls {
+        display: block;
+      }
+    }
+
+    @media (pointer: coarse) and (orientation: portrait) {
+      #stage {
+        width: 100vh;
+        height: 100vw;
+        left: 50%;
+        top: 50%;
+        right: auto;
+        bottom: auto;
+        transform: translate(-50%, -50%) rotate(90deg);
+        transform-origin: center center;
+      }
+
+      canvas {
+        width: 100vh;
+        height: 100vw;
+      }
+
+      #mobileControls {
+        position: absolute;
+      }
+    }
+  </style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game"></canvas>
+  <div id="mobileControls" aria-label="Mobile controls">
+    <div class="pad left">
+      <button class="touchButton" data-key="ArrowLeft" aria-label="Move left">&#9664;</button>
+      <button class="touchButton" data-key="ArrowRight" aria-label="Move right">&#9654;</button>
+    </div>
+    <div class="pad right">
+      <button class="touchButton" data-key="Space" aria-label="Jump">&#9650;</button>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  "use strict";
+
+  const stage = document.getElementById("stage");
+  const canvas = document.getElementById("game");
+  const mobileControls = document.getElementById("mobileControls");
+  const ctx = canvas.getContext("2d");
+  const TAU = Math.PI * 2;
+
+  const difficulties = [
+    { name: "Super Easy", sky: "#9fd8ff", gravity: 0.42, jump: 13.2, accel: 0.82, maxSpeed: 7.1, friction: 0.84, gap: 210, move: 0.65, hazards: false },
+    { name: "Easy", sky: "#90e8ca", gravity: 0.48, jump: 12.8, accel: 0.76, maxSpeed: 6.8, friction: 0.83, gap: 245, move: 0.85, hazards: false },
+    { name: "Medium", sky: "#ffd27d", gravity: 0.55, jump: 12.3, accel: 0.70, maxSpeed: 6.5, friction: 0.82, gap: 285, move: 1.05, hazards: true },
+    { name: "Hard", sky: "#ff9a9a", gravity: 0.62, jump: 11.8, accel: 0.66, maxSpeed: 6.3, friction: 0.80, gap: 320, move: 1.25, hazards: true },
+    { name: "Legendary", sky: "#a79cff", gravity: 0.70, jump: 11.5, accel: 0.62, maxSpeed: 6.1, friction: 0.79, gap: 355, move: 1.45, hazards: true },
+    { name: "Broken Land", sky: "#55586b", gravity: 0.78, jump: 11.15, accel: 0.58, maxSpeed: 5.95, friction: 0.77, gap: 395, move: 1.75, hazards: true }
+  ];
+
+  const keys = {};
+  const camera = { x: 0, y: 0, targetX: 0, targetY: 0 };
+  const mouse = { x: 0, y: 0, down: false };
+  const particles = [];
+  const stars = [];
+  const buttons = [];
+  let width = 0;
+  let height = 0;
+  let dpr = 1;
+  let state = "menu";
+  let selectedDifficulty = 1;
+  let world = null;
+  let player = null;
+  let audio = null;
+  let lastTime = 0;
+  let shake = 0;
+
+  function resize() {
+    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const portraitTouch = isTouchDevice() && window.innerHeight > window.innerWidth;
+    width = Math.floor(portraitTouch ? window.innerHeight : window.innerWidth);
+    height = Math.floor(portraitTouch ? window.innerWidth : window.innerHeight);
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function isTouchDevice() {
+    return matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  }
+
+  function canvasPoint(event) {
+    const touch = event.changedTouches ? event.changedTouches[0] : event;
+    const portraitTouch = isTouchDevice() && window.innerHeight > window.innerWidth;
+    if (portraitTouch) {
+      return {
+        x: touch.clientY,
+        y: window.innerWidth - touch.clientX
+      };
+    }
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (touch.clientX - rect.left) * (width / rect.width),
+      y: (touch.clientY - rect.top) * (height / rect.height)
+    };
+  }
+
+  async function requestLandscape() {
+    if (!isTouchDevice()) return;
+    try {
+      if (document.fullscreenEnabled && !document.fullscreenElement) {
+        await stage.requestFullscreen();
+      }
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock("landscape");
+      }
+    } catch (err) {
+      // Mobile browsers often block orientation lock for local files; the rotated layout still works.
+    }
+    resize();
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function rand(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function ensureAudio() {
+    if (!audio) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      audio = AudioContext ? new AudioContext() : null;
+    }
+    if (audio && audio.state === "suspended") audio.resume();
+  }
+
+  function beep(freq, duration, type, volume) {
+    if (!audio) return;
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.type = type || "sine";
+    osc.frequency.setValueAtTime(freq, audio.currentTime);
+    gain.gain.setValueAtTime(volume, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audio.destination);
+    osc.start();
+    osc.stop(audio.currentTime + duration);
+  }
+
+  function sound(name) {
+    ensureAudio();
+    if (name === "jump") beep(470, 0.12, "square", 0.055);
+    if (name === "land") beep(125, 0.08, "triangle", 0.05);
+    if (name === "checkpoint") {
+      beep(660, 0.10, "sine", 0.055);
+      setTimeout(() => beep(880, 0.11, "sine", 0.05), 70);
+    }
+    if (name === "die") {
+      beep(160, 0.18, "sawtooth", 0.055);
+      setTimeout(() => beep(88, 0.22, "sawtooth", 0.05), 95);
+    }
+    if (name === "win") {
+      [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.16, "triangle", 0.055), i * 85));
+    }
+  }
+
+  function createDust(x, y, color, count, power) {
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        x, y,
+        vx: rand(-power, power),
+        vy: rand(-power * 0.9, -0.5),
+        life: rand(24, 48),
+        maxLife: 48,
+        size: rand(2, 5),
+        color
+      });
+    }
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.12;
+      p.vx *= 0.98;
+      p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x - camera.x, p.y - camera.y, p.size, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function platformAt(x, y, w, h, moving, range, speed) {
+    return {
+      x, y, baseX: x, baseY: y, prevX: x, prevY: y, w, h,
+      moving: moving || "none",
+      range: range || 0,
+      speed: speed || 0,
+      phase: rand(0, TAU),
+      color: "#29364f",
+      glow: "#d9fff1"
+    };
+  }
+
+  function buildWorld(index) {
+    const cfg = difficulties[index];
+    const platforms = [];
+    const checkpoints = [];
+    const spikes = [];
+    let x = 0;
+    let y = 540;
+
+    platforms.push(platformAt(-220, y, 620, 44));
+    checkpoints.push({ x: 80, y: y - 74, active: true });
+
+    for (let i = 1; i <= 25; i++) {
+      x += cfg.gap + rand(-42, 62);
+      y += rand(-95, 95);
+      y = clamp(y, 245, 650);
+      const w = clamp(230 - i * 2 + rand(-35, 45), 130, 250);
+      const h = 34;
+      const moving = i % 3 === 0 ? "x" : (i % 5 === 0 ? "y" : "none");
+      const range = moving === "none" ? 0 : 80 + i * 3;
+      const speed = moving === "none" ? 0 : cfg.move * (0.014 + i * 0.0008);
+      const p = platformAt(x, y, w, h, moving, range, speed);
+      p.color = i % 2 ? "#26334a" : "#233f45";
+      platforms.push(p);
+
+      if (i % 5 === 0) checkpoints.push({ x: x + w * 0.5, y: y - 74, active: false });
+      if (cfg.hazards && i % 4 === 0) {
+        spikes.push({ x: x + w * 0.35, y: y - 18, w: 70, h: 18 });
+      }
+    }
+
+    const last = platforms[platforms.length - 1];
+    const finish = { x: last.x + last.w - 55, y: last.y - 156 };
+    return {
+      cfg,
+      index,
+      platforms,
+      checkpoints,
+      spikes,
+      finish,
+      spawn: { x: 60, y: 430 },
+      length: last.x + last.w + 600,
+      time: 0,
+      checkpoint: { x: 60, y: 430 }
+    };
+  }
+
+  function createPlayer() {
+    return {
+      x: world.spawn.x,
+      y: world.spawn.y,
+      w: 30,
+      h: 66,
+      vx: 0,
+      vy: 0,
+      onGround: false,
+      facing: 1,
+      runTime: 0,
+      jumpBuffer: 0,
+      coyote: 0,
+      alive: true
+    };
+  }
+
+  function startGame(index) {
+    ensureAudio();
+    requestLandscape();
+    selectedDifficulty = index;
+    world = buildWorld(index);
+    player = createPlayer();
+    camera.x = -80;
+    camera.y = 180;
+    particles.length = 0;
+    shake = 0;
+    state = "play";
+    sound("checkpoint");
+  }
+
+  function respawn() {
+    createDust(player.x, player.y + player.h, "#ff5e67", 34, 5);
+    sound("die");
+    shake = 14;
+    player.x = world.checkpoint.x;
+    player.y = world.checkpoint.y;
+    player.vx = 0;
+    player.vy = 0;
+    player.onGround = false;
+  }
+
+  function updatePlatforms() {
+    world.time++;
+    for (const p of world.platforms) {
+      p.prevX = p.x;
+      p.prevY = p.y;
+      if (p.moving === "x") p.x = p.baseX + Math.sin(world.time * p.speed + p.phase) * p.range;
+      if (p.moving === "y") p.y = p.baseY + Math.sin(world.time * p.speed + p.phase) * p.range * 0.55;
+    }
+  }
+
+  function intersects(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function updatePlayer() {
+    const cfg = world.cfg;
+    const left = keys.ArrowLeft;
+    const right = keys.ArrowRight;
+    const wantJump = keys.Space;
+
+    if (left) player.vx -= cfg.accel;
+    if (right) player.vx += cfg.accel;
+    if (!left && !right && player.onGround) player.vx *= cfg.friction;
+    if (!left && !right && !player.onGround) player.vx *= 0.985;
+    player.vx = clamp(player.vx, -cfg.maxSpeed, cfg.maxSpeed);
+    if (Math.abs(player.vx) > 0.15) player.facing = player.vx > 0 ? 1 : -1;
+
+    if (wantJump) player.jumpBuffer = 8;
+    else player.jumpBuffer = Math.max(0, player.jumpBuffer - 1);
+    player.coyote = player.onGround ? 8 : Math.max(0, player.coyote - 1);
+
+    if (player.jumpBuffer > 0 && player.coyote > 0) {
+      player.vy = -cfg.jump;
+      player.onGround = false;
+      player.jumpBuffer = 0;
+      player.coyote = 0;
+      createDust(player.x + player.w * 0.5, player.y + player.h, "#f8f7d8", 15, 3.2);
+      sound("jump");
+    }
+
+    player.vy += cfg.gravity;
+    player.vy = Math.min(player.vy, 18);
+    const oldX = player.x;
+    const oldY = player.y;
+    player.x += player.vx;
+    player.y += player.vy;
+    player.onGround = false;
+
+    for (const p of world.platforms) {
+      const plat = { x: p.x, y: p.y, w: p.w, h: p.h };
+      const body = { x: player.x, y: player.y, w: player.w, h: player.h };
+      if (!intersects(body, plat)) continue;
+
+      const previousBottom = oldY + player.h;
+      const previousTop = oldY;
+      const previousRight = oldX + player.w;
+      const previousLeft = oldX;
+
+      if (previousBottom <= p.y && player.vy >= 0) {
+        player.y = p.y - player.h;
+        player.vy = 0;
+        player.onGround = true;
+        player.x += p.x - p.prevX;
+        if (Math.abs(player.vy) > 6) createDust(player.x + player.w * 0.5, player.y + player.h, "#ffffff", 8, 2);
+      } else if (previousTop >= p.y + p.h && player.vy < 0) {
+        player.y = p.y + p.h;
+        player.vy = 1;
+      } else if (previousRight <= p.x) {
+        player.x = p.x - player.w;
+        player.vx = Math.min(0, player.vx);
+      } else if (previousLeft >= p.x + p.w) {
+        player.x = p.x + p.w;
+        player.vx = Math.max(0, player.vx);
+      }
+    }
+
+    if (player.onGround && Math.abs(player.vx) > 1.2 && world.time % 5 === 0) {
+      createDust(player.x + player.w * 0.5 - player.facing * 10, player.y + player.h, "#dbe7ea", 2, 1.8);
+    }
+
+    player.runTime += Math.abs(player.vx) * 0.08 + (player.onGround ? 0.05 : 0.02);
+
+    for (const cp of world.checkpoints) {
+      if (!cp.active && Math.abs(player.x - cp.x) < 42 && Math.abs(player.y - cp.y) < 90) {
+        cp.active = true;
+        world.checkpoint.x = cp.x;
+        world.checkpoint.y = cp.y - 5;
+        createDust(cp.x, cp.y, "#58ffc8", 38, 5);
+        sound("checkpoint");
+      }
+    }
+
+    for (const s of world.spikes) {
+      if (intersects({ x: player.x + 5, y: player.y + 8, w: player.w - 10, h: player.h - 8 }, s)) respawn();
+    }
+
+    if (player.y > 1100) respawn();
+
+    if (Math.abs(player.x - world.finish.x) < 54 && player.y + player.h > world.finish.y && player.y < world.finish.y + 160) {
+      state = "win";
+      createDust(world.finish.x, world.finish.y + 24, "#fff176", 80, 6);
+      sound("win");
+    }
+  }
+
+  function updateCamera() {
+    camera.targetX = player.x - width * 0.42;
+    camera.targetY = player.y - height * 0.56;
+    camera.x += (camera.targetX - camera.x) * 0.09;
+    camera.y += (camera.targetY - camera.y) * 0.08;
+    camera.x = clamp(camera.x, -260, Math.max(0, world.length - width));
+    camera.y = clamp(camera.y, 20, 470);
+    shake *= 0.88;
+  }
+
+  function drawSky() {
+    const sky = state === "menu" ? difficulties[selectedDifficulty].sky : world.cfg.sky;
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, sky);
+    gradient.addColorStop(0.72, "#f6f8ff");
+    gradient.addColorStop(1, "#c8d2df");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "#ffffff";
+    for (let i = 0; i < stars.length; i++) {
+      const s = stars[i];
+      const px = (s.x - (camera.x || 0) * s.depth) % (width + 220);
+      const py = s.y;
+      cloud(px - 80, py, s.size);
+    }
+    ctx.restore();
+  }
+
+  function cloud(x, y, scale) {
+    ctx.beginPath();
+    ctx.arc(x, y, 22 * scale, 0, TAU);
+    ctx.arc(x + 25 * scale, y - 10 * scale, 30 * scale, 0, TAU);
+    ctx.arc(x + 60 * scale, y, 24 * scale, 0, TAU);
+    ctx.rect(x - 4 * scale, y, 76 * scale, 20 * scale);
+    ctx.fill();
+  }
+
+  function drawWorld() {
+    const sx = shake ? rand(-shake, shake) : 0;
+    const sy = shake ? rand(-shake, shake) : 0;
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    ctx.fillStyle = "rgba(20,28,38,0.18)";
+    for (let x = -900; x < world.length; x += 170) {
+      const px = x - camera.x * 0.32;
+      ctx.fillRect(px, height - 165 - ((x / 170) % 5) * 18, 110, 190);
+    }
+
+    for (const p of world.platforms) {
+      const x = p.x - camera.x;
+      const y = p.y - camera.y;
+      ctx.fillStyle = "rgba(0,0,0,0.18)";
+      ctx.fillRect(x + 8, y + 12, p.w, p.h);
+      ctx.fillStyle = p.color;
+      roundRect(x, y, p.w, p.h, 7);
+      ctx.fill();
+      ctx.fillStyle = p.glow;
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(x + 8, y + 5, p.w - 16, 4);
+      ctx.globalAlpha = 1;
+    }
+
+    for (const s of world.spikes) {
+      const x = s.x - camera.x;
+      const y = s.y - camera.y;
+      ctx.fillStyle = "#6f1f32";
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x + i * 18, y + s.h);
+        ctx.lineTo(x + i * 18 + 9, y);
+        ctx.lineTo(x + i * 18 + 18, y + s.h);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    for (const cp of world.checkpoints) drawCheckpoint(cp);
+    drawFinish();
+    drawParticles();
+    drawStickman();
+    ctx.restore();
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawCheckpoint(cp) {
+    const x = cp.x - camera.x;
+    const y = cp.y - camera.y;
+    ctx.strokeStyle = cp.active ? "#18c98f" : "#596475";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 68);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.fillStyle = cp.active ? "#58ffc8" : "#778292";
+    ctx.beginPath();
+    ctx.moveTo(x + 3, y + 4);
+    ctx.lineTo(x + 50, y + 20);
+    ctx.lineTo(x + 3, y + 36);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawFinish() {
+    const x = world.finish.x - camera.x;
+    const y = world.finish.y - camera.y;
+    ctx.strokeStyle = "#202637";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 168);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 5; col++) {
+        ctx.fillStyle = (row + col) % 2 ? "#ffffff" : "#202637";
+        ctx.fillRect(x + col * 16, y + row * 14, 16, 14);
+      }
+    }
+  }
+
+  function drawStickman() {
+    const x = player.x + player.w / 2 - camera.x;
+    const y = player.y - camera.y;
+    const speed = Math.abs(player.vx);
+    const stride = Math.sin(player.runTime) * (player.onGround ? clamp(speed / 6, 0.2, 1) : 0.35);
+    const lift = Math.cos(player.runTime) * 3 * (player.onGround ? 1 : 0);
+    const headY = y + 14 + lift;
+    const bodyTop = y + 31 + lift;
+    const hipY = y + 49;
+    const dir = player.facing;
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#111722";
+    ctx.fillStyle = "#f6f2e8";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(x, headY, 11, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x, bodyTop);
+    ctx.lineTo(x + dir * 2, hipY);
+    ctx.stroke();
+
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(x, bodyTop + 5);
+    ctx.lineTo(x + dir * (18 * stride + 10), y + 42 - stride * 7);
+    ctx.moveTo(x, bodyTop + 5);
+    ctx.lineTo(x + dir * (-18 * stride - 10), y + 43 + stride * 7);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x + dir * 2, hipY);
+    ctx.lineTo(x + dir * (18 * stride + 8), y + 66);
+    ctx.moveTo(x + dir * 2, hipY);
+    ctx.lineTo(x + dir * (-18 * stride - 8), y + 66);
+    ctx.stroke();
+  }
+
+  function drawHud() {
+    ctx.fillStyle = "rgba(14,18,28,0.62)";
+    roundRect(18, 18, 290, 72, 8);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 20px Arial";
+    ctx.fillText(world.cfg.name, 34, 45);
+    ctx.font = "14px Ar
